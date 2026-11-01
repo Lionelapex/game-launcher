@@ -1,8 +1,9 @@
 """
 Game Launcher — a single-window launcher for all your games.
 Add a game by pointing at its .exe; the launcher names it after its folder,
-pulls the game's own icon, and shows everything in a tidy grid. Click to play.
-Supports multi-select removal.
+pulls the game's own icon, colours each tile from its artwork, and shows
+everything in a lively grid. Click to play. Favourites, play tracking,
+sorting, search, and multi-select removal included.
 """
 
 import os
@@ -10,6 +11,7 @@ import sys
 import json
 import hashlib
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 import customtkinter as ctk
@@ -25,7 +27,7 @@ except ImportError:
     HAS_WIN32 = False
 
 APP_TITLE = "Game Launcher"
-APP_TAGLINE = "All your games, one place"
+APP_TAGLINE = "Your games, one click away"
 CONFIG_DIR = Path.home() / ".game_launcher"
 CONFIG_FILE = CONFIG_DIR / "games.json"
 ICON_DIR = CONFIG_DIR / "icons"
@@ -33,12 +35,22 @@ ICON_DIR = CONFIG_DIR / "icons"
 ICON_SIZE = 256         # cached icon resolution (high-res extraction)
 CARD_ICON_SIZE = 100    # rendered tile size
 
-ACCENT = "#7C3AED"          # matches the app icon's violet
+ACCENT = "#7C3AED"          # violet accent (matches the app icon)
 ACCENT_HOVER = "#6D28D9"
-CARD_BG = "#2a2d34"
-CARD_SELECTED_BG = "#3b2f55"   # violet tint when selected
+ACCENT_SOFT = "#c4b5fd"
+CARD_BASE = (35, 38, 46)    # dark base for card-tint blending
+CARD_SELECTED_BG = "#3b2f55"
 DANGER = "#dc2626"
 DANGER_HOVER = "#b91c1c"
+STAR_GOLD = "#fbbf24"
+STAR_MUTED = "#8b8f98"
+
+SORT_OPTIONS = ["A - Z", "Most played", "Last played", "Recently added"]
+
+NAME_PALETTE = [
+    (76, 175, 80), (33, 150, 243), (156, 39, 176), (255, 152, 0),
+    (233, 30, 99), (0, 150, 136), (63, 81, 181), (255, 87, 34),
+]
 
 
 def resource_path(name):
@@ -161,11 +173,7 @@ def placeholder_icon(name, size=128):
     letter = (name.strip()[:1] or "?").upper()
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    palette = [
-        (76, 175, 80), (33, 150, 243), (156, 39, 176), (255, 152, 0),
-        (233, 30, 99), (0, 150, 136), (63, 81, 181), (255, 87, 34),
-    ]
-    color = palette[sum(ord(c) for c in name) % len(palette)]
+    color = name_color(name)
     d.rounded_rectangle([6, 6, size - 6, size - 6], radius=22, fill=color)
     try:
         font = ImageFont.truetype("segoeuib.ttf", int(size * 0.5))
@@ -200,12 +208,67 @@ def get_game_icon(game, size=128):
         return None
 
 
+# ---------------- Colour helpers ----------------
+def name_color(name):
+    """A deterministic, vivid colour for a game name."""
+    return NAME_PALETTE[sum(ord(c) for c in name) % len(NAME_PALETTE)]
+
+
+def icon_dominant(icon_path):
+    """Vivid average colour of an icon's opaque pixels, or None."""
+    try:
+        img = Image.open(icon_path).convert("RGBA").resize((16, 16))
+        r = g = b = n = 0
+        for pr, pg, pb, pa in img.getdata():
+            if pa > 40:
+                r += pr; g += pg; b += pb; n += 1
+        if not n:
+            return None
+        r //= n; g //= n; b //= n
+        mx = max(r, g, b)
+        if mx < 90:
+            return (139, 92, 246)   # too dark -> fall back to accent violet
+        scale = 225 / mx            # brighten so the colour pops
+        return (min(255, int(r * scale)), min(255, int(g * scale)), min(255, int(b * scale)))
+    except Exception:
+        return None
+
+
+def blend(c1, c2, t):
+    return tuple(int(c1[i] * (1 - t) + c2[i] * t) for i in range(3))
+
+
+def rgb_hex(c):
+    return "#%02x%02x%02x" % c
+
+
+def time_ago(iso):
+    if not iso:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso)
+    except Exception:
+        return ""
+    delta = datetime.now() - dt
+    days = delta.days
+    if days >= 365:
+        return f"{days // 365}y ago"
+    if days >= 1:
+        return f"{days}d ago"
+    secs = delta.seconds
+    if secs >= 3600:
+        return f"{secs // 3600}h ago"
+    if secs >= 60:
+        return f"{secs // 60}m ago"
+    return "just now"
+
+
 class GameLauncherApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE)
         self.geometry("1120x720")
-        self.minsize(720, 480)
+        self.minsize(760, 520)
 
         self._apply_window_icon()
 
@@ -213,7 +276,9 @@ class GameLauncherApp(ctk.CTk):
         self._ctk_images = {}
         self._cards = {}
         self._card_widgets = {}   # exe_key -> card frame
+        self._card_vivids = {}    # exe_key -> (r, g, b) accent colour
         self._filter = ""
+        self._sort_mode = SORT_OPTIONS[0]
         self._selection_mode = False
         self._selected = set()    # lowercase exe paths
 
@@ -239,29 +304,37 @@ class GameLauncherApp(ctk.CTk):
         top.grid_columnconfigure(1, weight=1)
 
         title_frame = ctk.CTkFrame(top, fg_color="transparent")
-        title_frame.grid(row=0, column=0, sticky="w", padx=(0, 16))
+        title_frame.grid(row=0, column=0, sticky="w", padx=(0, 12))
         title = ctk.CTkLabel(
             title_frame, text=APP_TITLE, font=ctk.CTkFont(size=22, weight="bold")
         )
         title.grid(row=0, column=0, sticky="w")
         subtitle = ctk.CTkLabel(
-            title_frame, text=APP_TAGLINE, font=ctk.CTkFont(size=12), text_color="#9ca3af"
+            title_frame, text=APP_TAGLINE, font=ctk.CTkFont(size=12), text_color=ACCENT_SOFT
         )
         subtitle.grid(row=1, column=0, sticky="w")
 
         self.search_var = ctk.StringVar()
         self.search_var.trace_add("write", lambda *_: self.on_search())
         search = ctk.CTkEntry(
-            top, placeholder_text="Search games...", textvariable=self.search_var, width=220
+            top, placeholder_text="Search games...", textvariable=self.search_var, width=200
         )
-        search.grid(row=0, column=1, sticky="e", padx=(0, 10))
+        search.grid(row=0, column=1, sticky="e", padx=(0, 8))
+
+        self.sort_var = ctk.StringVar(value=SORT_OPTIONS[0])
+        sort_menu = ctk.CTkOptionMenu(
+            top, values=SORT_OPTIONS, variable=self.sort_var, command=self.on_sort,
+            width=130, height=36, fg_color="#2a2d34", button_color="#3a3f47",
+            button_hover_color="#4a5059",
+        )
+        sort_menu.grid(row=0, column=2, padx=(0, 8))
 
         # Remove-selected button (shown only in selection mode)
         self.btn_remove_sel = ctk.CTkButton(
             top, text="Remove Selected (0)", width=160, height=36,
             fg_color=DANGER, hover_color=DANGER_HOVER, command=self.remove_selected,
         )
-        self.btn_remove_sel.grid(row=0, column=2, padx=(0, 8))
+        self.btn_remove_sel.grid(row=0, column=3, padx=(0, 8))
         self.btn_remove_sel.grid_remove()
 
         # Select toggle
@@ -270,14 +343,14 @@ class GameLauncherApp(ctk.CTk):
             fg_color="transparent", border_width=1, border_color="#4a5059",
             hover_color="#3a3f47", text_color="#d1d5db", command=self.toggle_selection_mode,
         )
-        self.btn_select.grid(row=0, column=3, padx=(0, 8))
+        self.btn_select.grid(row=0, column=4, padx=(0, 8))
 
         # Add game
         btn_add = ctk.CTkButton(
             top, text="+ Add Game", width=130, height=36,
             fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self.add_game,
         )
-        btn_add.grid(row=0, column=4)
+        btn_add.grid(row=0, column=5)
 
         # Grid area
         self.grid_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
@@ -291,28 +364,48 @@ class GameLauncherApp(ctk.CTk):
         # Context menu
         self.menu = Menu(self, tearoff=0)
         self.menu.add_command(label="Launch", command=self.menu_launch)
+        self.menu.add_command(label="Toggle favourite", command=self.menu_favorite)
         self.menu.add_command(label="Rename", command=self.menu_rename)
         self.menu.add_command(label="Change path...", command=self.menu_change_path)
         self.menu.add_separator()
         self.menu.add_command(label="Remove", command=self.menu_remove)
 
     # ---------------- Grid rendering ----------------
+    def _sorted_games(self, games):
+        mode = self._sort_mode
+        if mode == "Most played":
+            key = lambda g: g.get("plays", 0)
+            rev = True
+        elif mode == "Last played":
+            key = lambda g: g.get("last_played") or ""
+            rev = True
+        elif mode == "Recently added":
+            key = lambda g: g.get("added") or ""
+            rev = True
+        else:  # "A - Z"
+            key = lambda g: g.get("name", "").lower()
+            rev = False
+        favs = sorted([g for g in games if g.get("favorite")], key=key, reverse=rev)
+        rest = sorted([g for g in games if not g.get("favorite")], key=key, reverse=rev)
+        return favs + rest
+
     def refresh_grid(self):
         for w in self.grid_frame.winfo_children():
             w.destroy()
         self._cards.clear()
         self._ctk_images.clear()
         self._card_widgets.clear()
+        self._card_vivids.clear()
 
         query = self._filter.strip().lower()
         games = [g for g in self.games if query in g.get("name", "").lower()] if query else list(self.games)
-        games.sort(key=lambda g: g.get("name", "").lower())
+        games = self._sorted_games(games)
 
         if not games:
             if query:
                 text = "No games match your search."
             else:
-                text = "No games yet.\nClick \"+ Add Game\" to add your first game."
+                text = "No games yet\nClick \"+ Add Game\" to add your first game"
             empty = ctk.CTkLabel(
                 self.grid_frame, text=text, font=ctk.CTkFont(size=16),
                 text_color="#9ca3af", justify="center",
@@ -331,13 +424,22 @@ class GameLauncherApp(ctk.CTk):
 
     def _make_card(self, game, index):
         exe_key = game.get("exe", "").lower()
+        name = game.get("name", "Unnamed")
+
+        icon_path = get_game_icon(game, ICON_SIZE)
+        vivid = icon_dominant(icon_path) if (icon_path and os.path.exists(icon_path)) else name_color(name)
+        vivid = vivid or name_color(name)
+        tint = rgb_hex(blend(CARD_BASE, vivid, 0.30))
+        tint_bright = rgb_hex(blend(CARD_BASE, vivid, 0.55))
+        plate = rgb_hex(blend(CARD_BASE, vivid, 0.16))
+
         card = ctk.CTkFrame(
-            self.grid_frame, corner_radius=14, fg_color=CARD_BG,
-            border_width=2, border_color=CARD_BG,
+            self.grid_frame, corner_radius=14, fg_color=tint,
+            border_width=2, border_color=tint,
         )
         card.grid_columnconfigure(0, weight=1)
 
-        icon_path = get_game_icon(game, ICON_SIZE)
+        # Icon (real icon or letter tile)
         ctk_img = None
         if icon_path and os.path.exists(icon_path):
             try:
@@ -354,31 +456,62 @@ class GameLauncherApp(ctk.CTk):
         if ctk_img:
             tile = ctk.CTkButton(
                 card, image=ctk_img, text="", width=CARD_ICON_SIZE,
-                height=CARD_ICON_SIZE, fg_color="#3a3f47", hover_color="#4a5059",
+                height=CARD_ICON_SIZE, fg_color=plate, hover_color=tint_bright,
                 corner_radius=12, command=lambda g=game: self._card_click(g),
             )
         else:
-            letter = (game.get("name", "?")[:1] or "?").upper()
+            letter = (name[:1] or "?").upper()
             tile = ctk.CTkButton(
                 card, text=letter, width=CARD_ICON_SIZE, height=CARD_ICON_SIZE,
-                font=ctk.CTkFont(size=38, weight="bold"),
-                fg_color="#3a3f47", hover_color="#4a5059",
-                command=lambda g=game: self._card_click(g),
+                font=ctk.CTkFont(size=42, weight="bold"),
+                fg_color=rgb_hex(vivid), hover_color=tint_bright,
+                text_color="white", command=lambda g=game: self._card_click(g),
             )
-        tile.grid(row=0, column=0, padx=12, pady=(12, 6))
+        tile.grid(row=0, column=0, padx=12, pady=(14, 6))
 
-        name = game.get("name", "Unnamed")
+        # Name
         label = ctk.CTkLabel(
             card, text=name, width=CARD_ICON_SIZE + 24,
-            font=ctk.CTkFont(size=13), wraplength=CARD_ICON_SIZE + 20,
+            font=ctk.CTkFont(size=13, weight="bold"), wraplength=CARD_ICON_SIZE + 20,
         )
-        label.grid(row=1, column=0, padx=8, pady=(0, 12))
+        label.grid(row=1, column=0, padx=8, pady=(0, 4))
         label.bind("<Button-1>", lambda e, g=game: self._card_click(g))
 
-        for w in (tile, label, card):
+        # Coloured accent underline
+        underline = ctk.CTkFrame(card, width=44, height=3, corner_radius=2, fg_color=rgb_hex(vivid))
+        underline.grid(row=2, column=0, pady=(0, 4))
+
+        # Play count / last played
+        plays = game.get("plays", 0)
+        if plays:
+            sub = f"\u25b6 {plays}"
+            ago = time_ago(game.get("last_played"))
+            if ago:
+                sub += f"  \u00b7  {ago}"
+        else:
+            sub = "New"
+        sublabel = ctk.CTkLabel(
+            card, text=sub, width=CARD_ICON_SIZE + 24,
+            font=ctk.CTkFont(size=11), text_color="#c7cad1",
+        )
+        sublabel.grid(row=3, column=0, padx=8, pady=(0, 12))
+
+        # Favourite star (top-right badge)
+        fav = bool(game.get("favorite"))
+        star = ctk.CTkButton(
+            card, text="\u2605" if fav else "\u2606", width=26, height=26,
+            corner_radius=13, font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#20232b", hover_color=tint_bright,
+            text_color=STAR_GOLD if fav else STAR_MUTED,
+            command=lambda g=game: self.toggle_favorite(g),
+        )
+        star.place(relx=1.0, rely=0.0, anchor="ne", x=-4, y=4)
+
+        for w in (tile, label, sublabel, card):
             w.bind("<Button-3>", lambda e, idx=index: self._show_menu(e, idx))
 
         self._card_widgets[exe_key] = card
+        self._card_vivids[exe_key] = vivid
         self._cards[index] = card
 
         if exe_key in self._selected:
@@ -413,10 +546,12 @@ class GameLauncherApp(ctk.CTk):
         card = self._card_widgets.get(key)
         if not card:
             return
+        vivid = self._card_vivids.get(key, (124, 58, 237))
+        tint = rgb_hex(blend(CARD_BASE, vivid, 0.30))
         if selected:
             card.configure(fg_color=CARD_SELECTED_BG, border_color=ACCENT)
         else:
-            card.configure(fg_color=CARD_BG, border_color=CARD_BG)
+            card.configure(fg_color=tint, border_color=tint)
 
     def remove_selected(self):
         if not self._selected:
@@ -434,7 +569,7 @@ class GameLauncherApp(ctk.CTk):
     def _update_action_bar(self):
         n = len(self._selected)
         if self._selection_mode:
-            self.btn_select.configure(text="Done", border_color=ACCENT, text_color="#c4b5fd")
+            self.btn_select.configure(text="Done", border_color=ACCENT, text_color=ACCENT_SOFT)
             self.btn_remove_sel.configure(
                 text=f"Remove Selected ({n})", state="normal" if n else "disabled"
             )
@@ -448,17 +583,26 @@ class GameLauncherApp(ctk.CTk):
         query = self._filter.strip().lower()
         if self._selection_mode:
             self.status.configure(
-                text=f"Selection mode — {len(self._selected)} selected. Click games to toggle, then remove."
+                text=f"Selection mode \u2014 {len(self._selected)} selected. Click games to toggle, then remove."
             )
         else:
+            favs = sum(1 for g in self.games if g.get("favorite"))
             shown = sum(1 for g in self.games if not query or query in g.get("name", "").lower())
-            self.status.configure(
-                text=f"{len(self.games)} game(s) total" + (f" — showing {shown}" if query else "")
-            )
+            text = f"{len(self.games)} games"
+            if favs:
+                text += f"  \u00b7  {favs} favourites"
+            if query:
+                text += f"  \u00b7  showing {shown}"
+            self.status.configure(text=text)
 
     # ---------------- Context menu ----------------
     def _show_menu(self, event, index):
         self._menu_index = index
+        g = self._menu_game()
+        if g is not None:
+            self.menu.entryconfigure(1, label="Unfavourite" if g.get("favorite") else "Add to favourites")
+        else:
+            self.menu.entryconfigure(1, label="Toggle favourite")
         try:
             self.menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -471,6 +615,11 @@ class GameLauncherApp(ctk.CTk):
         g = self._menu_game()
         if g:
             self.launch_game(g)
+
+    def menu_favorite(self):
+        g = self._menu_game()
+        if g:
+            self.toggle_favorite(g)
 
     def menu_rename(self):
         g = self._menu_game()
@@ -507,9 +656,19 @@ class GameLauncherApp(ctk.CTk):
             save_games(self.games)
             self.refresh_grid()
 
-    # ---------------- Search ----------------
+    # ---------------- Search / sort ----------------
     def on_search(self):
         self._filter = self.search_var.get()
+        self.refresh_grid()
+
+    def on_sort(self, value):
+        self._sort_mode = value
+        self.refresh_grid()
+
+    # ---------------- Favourites ----------------
+    def toggle_favorite(self, game):
+        game["favorite"] = not bool(game.get("favorite"))
+        save_games(self.games)
         self.refresh_grid()
 
     # ---------------- Adding games ----------------
@@ -522,7 +681,11 @@ class GameLauncherApp(ctk.CTk):
         if any(g.get("exe", "").lower() == path.lower() for g in self.games):
             messagebox.showinfo("Already added", f'"{path}" is already in the launcher.')
             return
-        game = {"name": name_from_exe(path), "exe": path, "icon": ""}
+        game = {
+            "name": name_from_exe(path), "exe": path, "icon": "",
+            "plays": 0, "last_played": None, "favorite": False,
+            "added": datetime.now().isoformat(),
+        }
         self.games.append(game)
         save_games(self.games)
         self.refresh_grid()
@@ -541,6 +704,14 @@ class GameLauncherApp(ctk.CTk):
             subprocess.Popen([exe], cwd=cwd)
         except Exception as e:
             messagebox.showerror("Launch failed", str(e))
+            return
+
+        game["plays"] = game.get("plays", 0) + 1
+        game["last_played"] = datetime.now().isoformat()
+        if not game.get("added"):
+            game["added"] = datetime.now().isoformat()
+        save_games(self.games)
+        self.refresh_grid()
 
 
 def main():

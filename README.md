@@ -12,8 +12,11 @@ A single-window launcher for all your PC games. Point it at a game's `.exe` and 
 - **Click to launch** — one click runs the game in its own folder (so games that need their working directory just work).
 - **Search** — filter your library instantly.
 - **Multi-select removal** — enter Select mode, tick several games, remove them in one go.
-- **Right-click menu** — Launch, Rename, Change path, or Remove any game.
-- **Dark, clean UI** — a violet-accented grid that gets out of your way.
+- **Favourites** — star your favourites; they're pinned to the top of the grid.
+- **Play tracking** — see how many times you've played each game and when you last played it.
+- **Sorting** — A–Z, most played, last played, or recently added.
+- **Right-click menu** — Launch, Favourite, Rename, Change path, or Remove any game.
+- **Vibrant UI** — every tile is coloured from its game's own artwork.
 
 ## Download & Run (Windows)
 
@@ -30,8 +33,10 @@ Your games list and extracted icons are saved in `%USERPROFILE%\.game_launcher\`
 
 1. Click **+ Add Game** and pick the game's `.exe` (e.g. `...\Dave the Diver\DaveTheDiver.exe`).
 2. It appears as a tile named after the game's folder, complete with its icon.
-3. Click a tile to launch. Right-click a tile for **Rename / Change path / Remove**.
-4. To remove several at once: click **Select** → click the games to highlight them → **Remove Selected (N)**.
+3. Click a tile to launch. Right-click a tile for **Launch / Favourite / Rename / Change path / Remove**.
+4. Star a game (★ in the top-right of its tile) to pin it to the top of your library.
+5. Use the sorting dropdown to order by **A–Z**, **Most played**, **Last played**, or **Recently added**.
+6. To remove several at once: click **Select** → click the games to highlight them → **Remove Selected (N)**.
 
 ## Requirements
 
@@ -68,7 +73,7 @@ pyinstaller --noconfirm --clean --onefile --windowed \
 
 - [ ] Choose a games folder — auto-detect games inside it (add several at once)
 - [ ] Import libraries from Steam / Epic / GOG
-- [ ] Categories & favourites
+- [ ] Categories & tags
 - [ ] Custom game art / covers
 
 ## License
