@@ -1,0 +1,76 @@
+# 🎮 Game Launcher
+
+A single-window launcher for all your PC games. Point it at a game's `.exe` and it appears as a clean, icon-labelled tile — click to play. No more digging through folder trees to launch a game.
+
+![Game Launcher icon](icon_preview.png)
+
+## Features
+
+- **One launcher for every game** — add any game's `.exe` and it shows up in a tidy grid.
+- **Real game icons** — each tile pulls the game's actual icon (high-resolution, extracted straight from the executable).
+- **Auto-naming** — games are named after their folder (e.g. `Dave the Diver`), not a raw filename.
+- **Click to launch** — one click runs the game in its own folder (so games that need their working directory just work).
+- **Search** — filter your library instantly.
+- **Multi-select removal** — enter Select mode, tick several games, remove them in one go.
+- **Right-click menu** — Launch, Rename, Change path, or Remove any game.
+- **Dark, clean UI** — a violet-accented grid that gets out of your way.
+
+## Download & Run (Windows)
+
+1. Go to the [**Releases**](../../releases) page.
+2. Download **`GameLauncher.exe`**.
+3. Put it anywhere you like — it's **portable**, no install needed.
+4. Double-click to run.
+
+> **Windows SmartScreen:** because the app is unsigned, the first launch may show a "Windows protected your PC" prompt. Click **More info → Run anyway**. (Building it yourself from source below avoids this entirely.)
+
+Your games list and extracted icons are saved in `%USERPROFILE%\.game_launcher\`, so they survive updates and moving the `.exe` around.
+
+## Using it
+
+1. Click **+ Add Game** and pick the game's `.exe` (e.g. `...\Dave the Diver\DaveTheDiver.exe`).
+2. It appears as a tile named after the game's folder, complete with its icon.
+3. Click a tile to launch. Right-click a tile for **Rename / Change path / Remove**.
+4. To remove several at once: click **Select** → click the games to highlight them → **Remove Selected (N)**.
+
+## Requirements
+
+- Windows 10 or 11
+- Nothing else — it's a single self-contained `.exe`.
+
+## Building from source
+
+```bash
+# 1. Install Python 3.10+ and dependencies
+pip install customtkinter Pillow pywin32 pyinstaller
+
+# 2. (Optional) Regenerate the app icon
+python make_icon.py
+
+# 3. Build the .exe
+pyinstaller --noconfirm --clean --onefile --windowed \
+  --name GameLauncher --icon icon.ico --add-data "icon.ico;." \
+  --collect-all customtkinter game_launcher.py
+
+# Output: dist/GameLauncher.exe
+```
+
+## Project structure
+
+| Path | Purpose |
+|------|---------|
+| `game_launcher.py` | The app — GUI, game management, icon extraction |
+| `make_icon.py` | Generates `icon.ico` from scratch |
+| `icon.ico` | App icon (violet gradient + gamepad) |
+| `icon_preview.png` | Icon preview used in this README |
+
+## Roadmap
+
+- [ ] Choose a games folder — auto-detect games inside it (add several at once)
+- [ ] Import libraries from Steam / Epic / GOG
+- [ ] Categories & favourites
+- [ ] Custom game art / covers
+
+## License
+
+[MIT](LICENSE)
